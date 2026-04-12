@@ -11,7 +11,7 @@ This repository breaks down networking concepts into digestible, practical notes
 | Topic | What You'll Learn |
 |-------|-------------------|
 | [**TCP**](TCP-IP/TCP/) | How connections are established (3-way handshake), how data flows with sequence numbers, flow control, retransmission, and connection teardown |
-| [**VLAN**](TCP-IP/VLAN/) | Virtual LANs, inter-VLAN routing with SVI on Cisco Nexus, traffic flow between VLANs |
+| [**VLAN**](TCP-IP/VLAN/) | Virtual LANs — what they are, why we need them, 802.1Q packet format, inter-VLAN routing with SVI on Cisco Nexus |
 | [**VXLAN**](TCP-IP/VXLAN/) | Overlay networking for data centers — extending Layer 2 over Layer 3 |
 
 ## 🔬 Highlights
@@ -31,7 +31,8 @@ Networking/
     │   ├── TCP_Connection.md  ← TCP lifecycle (theory + worked examples)
     │   └── Wireshark_3Way_Handshake.md  ← Real packet analysis
     ├── VLAN/
-    │   └── InterVLAN_Routing.md  ← SVI routing on Cisco Nexus 9K
+    │   ├── VLAN.md              ← VLAN fundamentals & 802.1Q packet format
+    │   └── InterVLAN_Routing.md ← SVI routing on Cisco Nexus 9K
     └── VXLAN/
         ├── Basic_VXLAN_Configuration.pdf
         └── VXLAN.pdf
@@ -43,7 +44,8 @@ New to networking? Start here:
 
 1. **[TCP Connection Lifecycle](TCP-IP/TCP/TCP_Connection.md)** — Understand how two computers establish a connection, send data, and close
 2. **[Wireshark 3-Way Handshake](TCP-IP/TCP/Wireshark_3Way_Handshake.md)** — See a real handshake captured from a laptop connecting to Microsoft
-3. **[Inter-VLAN Routing](TCP-IP/VLAN/InterVLAN_Routing.md)** — Learn how traffic moves between VLANs on Cisco switches
+3. **[VLAN Fundamentals](TCP-IP/VLAN/VLAN.md)** — What VLANs are, the problems they solve, and the 802.1Q frame format
+4. **[Inter-VLAN Routing](TCP-IP/VLAN/InterVLAN_Routing.md)** — Learn how traffic moves between VLANs on Cisco switches
 
 ## 🧠 Key Concepts at a Glance
 

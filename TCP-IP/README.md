@@ -21,6 +21,7 @@ Study notes and reference materials for TCP/IP networking concepts.
 
 | Document | Description |
 |----------|-------------|
+| [VLAN Fundamentals (802.1Q)](VLAN/VLAN.md) | What is a VLAN, the problems it solves, IEEE 802.1Q packet format with bit-level breakdown, tagged vs untagged frames, access vs trunk ports, Q-in-Q |
 | [Inter-VLAN Routing (SVI)](VLAN/InterVLAN_Routing.md) | Cisco Nexus 9K inter-VLAN routing with SVI, transit VLAN, static routes, traffic flow, verification, and troubleshooting |
 
 ## Quick Reference
