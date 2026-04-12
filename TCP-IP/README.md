@@ -22,7 +22,6 @@ Study notes and reference materials for TCP/IP networking concepts.
 | Document | Description |
 |----------|-------------|
 | [Inter-VLAN Routing (SVI)](VLAN/InterVLAN_Routing.md) | Cisco Nexus 9K inter-VLAN routing with SVI, transit VLAN, static routes, traffic flow, verification, and troubleshooting |
-| [InterVlanRouting_1.pdf](VLAN/InterVlanRouting_1.pdf) | Original topology diagram (PDF) |
 
 ## Quick Reference
 
