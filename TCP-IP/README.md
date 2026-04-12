@@ -4,9 +4,9 @@ Study notes and reference materials for TCP/IP networking concepts.
 
 ## Contents
 
-| Topic | File | Description |
-|-------|------|-------------|
-| **TCP Connections** | [TCP_Connection.md](TCP_Connection.md) | Deep dive into TCP connection lifecycle: 3-way handshake, data transfer with worked examples, flow control, retransmission, 4-way close, all 11 TCP states (RFC 9293) |
+| Topic | Directory | Description |
+|-------|-----------|-------------|
+| **TCP** | [TCP/](TCP/) | TCP connection lifecycle: 3-way handshake, data transfer with byte-level diagrams, flow control, retransmission, 4-way close, all 11 TCP states (RFC 9293) |
 | **VLAN** | [VLAN/](VLAN/) | Inter-VLAN routing configuration and concepts |
 | **VXLAN** | [VXLAN/](VXLAN/) | Virtual Extensible LAN -- overlay networking for data centers |
 
