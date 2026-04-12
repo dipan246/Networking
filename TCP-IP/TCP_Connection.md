@@ -214,6 +214,23 @@ ack_number      = next byte you EXPECT from the other side
                 = last_byte_received + 1
 ```
 
+### Golden Rule: My Sequence Number = Peer's Last ACK
+
+> **Your `seq` always equals the last `ack` your peer sent you.**
+
+The peer's ACK says *"send me byte X next"* — so your next segment uses `seq = X`.
+
+**Proof from the example above:**
+
+| Peer sent me | Then I send | Match? |
+|--------------|-------------|--------|
+| Server `ack=101` (pkt 2) | Client `seq=101` (pkt 3) | Yes |
+| Client `ack=301` (pkt 3) | Server `seq=301` (pkt 6) | Yes |
+| Server `ack=121` (pkt 6) | Client `seq=121` (pkt 10) | Yes |
+| Client `ack=331` (pkt 10) | Server `seq=331` (pkt 12) | Yes |
+
+> **Exception**: During **retransmission**, the sender reuses an older seq (the lost byte's position), not the peer's latest ack.
+
 ---
 
 ## 5. Flow Control -- Sliding Window
@@ -439,6 +456,11 @@ An attacker sends many SYNs without completing the handshake, filling the server
 Sequence number math:
   next_seq        = current_seq + bytes_sent_in_this_segment
   ack_number      = last_byte_received + 1 (next byte expected)
+
+Golden rule:
+  my_seq          = peer's last ack to me
+                    (peer said "send me byte X" -> I send with seq=X)
+                    (Exception: retransmission uses the lost byte's seq)
 
 SYN/FIN consume 1 sequence number:
   After SYN with seq=X  -> next seq = X + 1
