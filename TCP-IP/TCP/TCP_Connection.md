@@ -18,8 +18,11 @@ TCP is a **reliable, in-order, byte-stream** transport protocol. A connection is
 8. [TCP State Machine (All 11 States)](#8-tcp-state-machine-all-11-states)
 9. [Special Scenarios](#9-special-scenarios)
 10. [Key Reliability Mechanisms](#10-key-reliability-mechanisms)
-11. [Key Formulas — Cheat Sheet](#11-key-formulas--cheat-sheet)
-12. [References](#12-references)
+11. [ACK Deep Dive — Cumulative ACKs, Delayed ACKs & When TCP Sends ACKs](#11-ack-deep-dive--cumulative-acks-delayed-acks--when-tcp-sends-acks)
+12. [SACK Deep Dive — Selective Acknowledgment](#12-sack-deep-dive--selective-acknowledgment)
+13. [Congestion Control Deep Dive — Slow Start, AIMD & CUBIC](#13-congestion-control-deep-dive--slow-start-aimd--cubic)
+14. [Key Formulas — Cheat Sheet](#14-key-formulas--cheat-sheet)
+15. [References](#15-references)
 
 ---
 
@@ -519,7 +522,361 @@ An attacker sends many SYNs without completing the handshake, filling the server
 
 ---
 
-## 11. Key Formulas -- Cheat Sheet
+## 11. ACK Deep Dive -- Cumulative ACKs, Delayed ACKs & When TCP Sends ACKs
+
+### 11.1 Cumulative ACKs — Always On
+
+TCP ACKs are **always cumulative** — this is fundamental to the protocol (RFC 793/9293), not an optional mode.
+
+The **Acknowledgment Number** in the TCP header means:
+
+> "I have successfully received all bytes up to N-1. Send me byte N next."
+
+A single ACK can confirm multiple segments at once:
+
+```
+  Sender                                              Receiver
+     |                                                    |
+     |  [1] seq=1, 10B   -------------------------------->|
+     |  [2] seq=11, 10B  -------------------------------->|
+     |  [3] seq=21, 10B  -------------------------------->|
+     |  [4] seq=31, 10B  -------------------------------->|
+     |  [5] seq=41, 10B  -------------------------------->|
+     |                                                    |
+     |  <----------  ACK=51  -----------------------------|  (one ACK covers ALL 5 segments!)
+     |                                                    |
+```
+
+ACK=51 means "I received bytes 1-50, send me byte 51 next." The receiver doesn't need to ACK each segment individually — one cumulative ACK covers everything received so far.
+
+### 11.2 Delayed ACK — RFC 1122
+
+Sending an ACK for every single segment wastes bandwidth. **Delayed ACK** (RFC 1122) reduces overhead by batching:
+
+| Rule | RFC | Requirement Level |
+|------|-----|-------------------|
+| ACK within **500ms** of receiving a segment | RFC 1122 | **MUST** |
+| ACK at least every **2nd full-size segment** | RFC 1122 | **SHOULD** |
+| Piggyback ACK with data if available | RFC 1122 | **SHOULD** |
+
+> **In practice**, most implementations (Linux, Windows) use a **~200ms** delayed ACK timer — more responsive than the 500ms maximum allowed by RFC 1122.
+
+### 11.3 When Does TCP Send an ACK?
+
+| # | Trigger | ACK Behavior | RFC | Why |
+|---|---------|-------------|-----|-----|
+| 1 | **Every 2nd full-size segment** | ACK immediately | 1122 | Delayed ACK default — don't let too many segments go unacknowledged |
+| 2 | **Delayed ACK timer expires (~200ms)** | ACK fires on timeout | 1122 | Only 1 segment arrived; waited long enough |
+| 3 | **Out-of-order segment arrives** | ACK immediately (duplicate) | 5681 | Signal a gap to trigger fast retransmit at the sender |
+| 4 | **Gap-filling segment arrives** | ACK immediately | 5681 | Received the missing segment — update cumulative ACK to cover everything |
+| 5 | **Receiver has data to send back** | Piggyback ACK with data | 1122 | Efficient — combine ACK + response in one segment (no extra packet) |
+| 6 | **Window update needed** | ACK immediately | 9293 | Receiver freed buffer space — tell sender the new window size |
+
+### 11.4 Worked Example — 5 In-Order Packets
+
+```
+  Sender                                              Receiver
+     |                                                    |
+     |  [1] seq=1, 1460B  ------------------------------->|  (starts delayed ACK timer)
+     |  [2] seq=1461, 1460B ------------------------------>|  ACK=2921 (2nd segment → ACK now!)
+     |  [3] seq=2921, 1460B ------------------------------>|  (starts delayed ACK timer)
+     |  [4] seq=4381, 1460B ------------------------------>|  ACK=5841 (2nd segment → ACK now!)
+     |  [5] seq=5841, 1460B ------------------------------>|  (starts delayed ACK timer)
+     |                                                    |
+     |         ... 200ms passes ...                       |
+     |                                                    |
+     |  <----------  ACK=7301  ----------------------------|  (timer fires → ACK for pkt 5)
+     |                                                    |
+```
+
+**Result**: 3 ACKs for 5 packets (ACK every 2nd + timer for the odd one).
+
+### 11.5 Out-of-Order Example — Packet 3 Lost
+
+When a packet is lost, the receiver sends **immediate duplicate ACKs** for every subsequent packet — no delay allowed (RFC 5681):
+
+```
+  Sender                                              Receiver
+     |                                                    |
+     |  [1] seq=1, 1460B  ------------------------------->|  (starts delayed ACK timer)
+     |  [2] seq=1461, 1460B ------------------------------>|  ACK=2921 (2nd segment)
+     |  [3] seq=2921, 1460B  --------X  (LOST!)          |
+     |  [4] seq=4381, 1460B ------------------------------>|  ACK=2921 (dup! out-of-order → immediate)
+     |  [5] seq=5841, 1460B ------------------------------>|  ACK=2921 (dup! out-of-order → immediate)
+     |                                                    |
+     |  Sender sees duplicate ACKs → suspects loss        |
+     |                                                    |
+```
+
+The cumulative ACK stays at 2921 because that's the next byte the receiver is missing. Even though packets 4 and 5 were received, the ACK number doesn't advance past the gap.
+
+### 11.6 Piggybacking — Free ACKs
+
+When the receiver has data to send back (e.g., an HTTP response), the ACK is included in the data segment for free — no separate ACK packet needed:
+
+```
+  Client                                              Server
+     |                                                    |
+     |  [1] PSH+ACK seq=1, data="GET /index.html"  ----->|
+     |                                                    |
+     |  <--- PSH+ACK seq=1, ack=18, data="<html>..."  ---|  (ACK piggybacked with response!)
+     |                                                    |
+```
+
+**One packet carries both the ACK and the response data** — this is why the ACK flag is set on almost every TCP segment after the handshake.
+
+---
+
+## 12. SACK Deep Dive -- Selective Acknowledgment
+
+### 12.1 The Problem SACK Solves
+
+With only cumulative ACKs, the sender knows there's a gap but doesn't know exactly what the receiver has beyond the gap:
+
+```
+Without SACK — sender knows:     "Receiver is missing byte 2921"
+With SACK    — sender knows:     "Receiver is missing byte 2921, but HAS 4381-7300"
+```
+
+Without SACK, the sender must either:
+- **Wait for RTO** and retransmit everything from the gap, or
+- **Retransmit conservatively** and potentially resend data already received
+
+### 12.2 How SACK Works
+
+SACK is a **TCP option** negotiated during the 3-way handshake:
+
+1. **SYN**: Client includes `SACK-Permitted` option → "I support SACK"
+2. **SYN+ACK**: Server includes `SACK-Permitted` option → "Me too"
+3. **Data transfer**: Receiver includes `SACK blocks` in ACKs when there are gaps
+
+A SACK block is a pair: `(left_edge, right_edge)` — meaning "I have bytes from left_edge to right_edge-1."
+
+### 12.3 Worked Example — Packet 3 Lost, SACK Enabled
+
+```
+  Sender                                              Receiver
+     |                                                    |
+     |  [1] seq=1, 1460B  ------------------------------->|
+     |  [2] seq=1461, 1460B ------------------------------>|  ACK=2921
+     |  [3] seq=2921, 1460B  --------X  (LOST!)          |
+     |  [4] seq=4381, 1460B ------------------------------>|  ACK=2921, SACK=[4381-5841]
+     |  [5] seq=5841, 1460B ------------------------------>|  ACK=2921, SACK=[4381-7301]
+     |                                                    |
+     |  Sender knows: "Missing 2921-4380, has 4381-7300"  |
+     |  Retransmits ONLY packet 3:                        |
+     |                                                    |
+     |  [3'] seq=2921, 1460B (retransmit) --------------->|  ACK=7301 (cumulative! gap filled)
+     |                                                    |
+```
+
+**Without SACK**: Sender would retransmit packets 3, 4, AND 5 — wasting bandwidth on 4 and 5 which were already received.
+
+**With SACK**: Sender retransmits **only packet 3** — saving 2920 bytes of unnecessary retransmission.
+
+### 12.4 Multiple Gaps
+
+SACK supports up to **3-4 SACK blocks** per ACK (limited by TCP option space — 40 bytes max). With multiple losses, the receiver reports all non-contiguous ranges:
+
+```
+  Received: [1-1460], [4381-5840], [8761-10220]
+  Missing:  [1461-4380], [5841-8760]
+
+  ACK=1461, SACK=[4381-5841][8761-10221]
+  
+  Sender retransmits: only the missing ranges (1461-4380, 5841-8760)
+```
+
+### 12.5 SACK vs No SACK — Comparison
+
+| Scenario: Packets 1-5 sent, packet 3 lost | Without SACK | With SACK |
+|--------------------------------------------|-------------|-----------|
+| Receiver sends | ACK=2921, ACK=2921, ACK=2921 | ACK=2921 SACK[4381-5841], ACK=2921 SACK[4381-7301] |
+| Sender retransmits | Packets 3, 4, 5 (3 segments) | Packet 3 only (1 segment) |
+| Wasted bandwidth | 2 segments (4 and 5 already received) | None |
+| Recovery time | Longer | Shorter |
+
+### 12.6 Key RFCs
+
+| RFC | Topic |
+|-----|-------|
+| [RFC 2018](https://www.ietf.org/rfc/rfc2018.html) | TCP SACK option definition |
+| [RFC 2883](https://www.ietf.org/rfc/rfc2883.html) | D-SACK — Duplicate SACK (reports duplicate segments received) |
+| [RFC 3517](https://www.ietf.org/rfc/rfc3517.html) | Conservative SACK-based loss recovery algorithm |
+
+---
+
+## 13. Congestion Control Deep Dive -- Slow Start, AIMD & CUBIC
+
+### 13.1 Why Congestion Control?
+
+Flow control (sliding window) prevents overwhelming the **receiver**. Congestion control prevents overwhelming the **network**. Without it, senders would flood the network, causing massive packet loss and collapse.
+
+The sender maintains a **congestion window (cwnd)** — the maximum bytes it can have in flight, independent of the receiver's window:
+
+```
+effective_window = min(cwnd, receiver_window)
+can_send         = effective_window - bytes_in_flight
+```
+
+### 13.2 The Four Phases
+
+```
+    cwnd
+     ^
+     |                          * * *
+     |                      *           *       <- Congestion Avoidance (linear)
+     |                   *                 *
+     |                *                       *  <- Loss detected!
+     |             *                          |
+     |          *   <- Slow Start             |  cwnd cut (multiplicative decrease)
+     |       *      (exponential)             |
+     |    *                                   v
+     | *                                   *
+     |*                                 *      <- Recovery + Congestion Avoidance again
+     +----------------------------------------> time
+              ssthresh
+```
+
+#### Phase 1: Slow Start (Exponential Growth)
+
+- **Initial cwnd** = 1 MSS (or 10 MSS per RFC 6928)
+- **On each ACK**: cwnd += 1 MSS → effectively **doubles cwnd every RTT**
+- **Until**: cwnd reaches `ssthresh` (slow start threshold), then switch to congestion avoidance
+
+```
+RTT 1: cwnd = 1 MSS  →  send 1 segment   →  1 ACK  →  cwnd = 2
+RTT 2: cwnd = 2 MSS  →  send 2 segments  →  2 ACKs →  cwnd = 4
+RTT 3: cwnd = 4 MSS  →  send 4 segments  →  4 ACKs →  cwnd = 8
+RTT 4: cwnd = 8 MSS  →  send 8 segments  →  8 ACKs →  cwnd = 16
+```
+
+#### Phase 2: Congestion Avoidance (Linear Growth — AIMD)
+
+Once cwnd ≥ ssthresh, growth slows to **Additive Increase**:
+
+- **On each ACK**: cwnd += MSS × (MSS / cwnd) → approximately **+1 MSS per RTT**
+- This is the "AI" in AIMD (Additive Increase, Multiplicative Decrease)
+
+#### Phase 3: Loss Detection → Multiplicative Decrease
+
+| Loss Signal | Response | New cwnd | New ssthresh |
+|------------|----------|----------|-------------|
+| **3 duplicate ACKs** (fast retransmit) | Mild reduction | cwnd / 2 | cwnd / 2 |
+| **RTO timeout** | Severe reduction | 1 MSS | cwnd / 2 |
+
+This is the "MD" in AIMD — **halve the window** on loss.
+
+#### Phase 4: Fast Recovery (RFC 5681)
+
+After fast retransmit (3 dup ACKs):
+1. Set ssthresh = cwnd / 2
+2. Set cwnd = ssthresh + 3 MSS (inflate for the 3 dup ACKs)
+3. For each additional dup ACK: cwnd += 1 MSS
+4. When new data is ACKed: cwnd = ssthresh (deflate, enter congestion avoidance)
+
+### 13.3 Reno vs NewReno vs CUBIC
+
+| Algorithm | Growth Pattern | Loss Response | Key Feature | RFC |
+|-----------|---------------|---------------|-------------|-----|
+| **Reno** | Linear (AIMD) | cwnd / 2 | Basic fast recovery — exits on first new ACK | 5681 |
+| **NewReno** | Linear (AIMD) | cwnd / 2 | Improved fast recovery — handles multiple losses in one window | 6582 |
+| **CUBIC** | Cubic function of time | cwnd × 0.7 (β=0.7) | RTT-fair, time-based growth curve | 8312 |
+
+### 13.4 CUBIC — The Modern Default
+
+CUBIC is the default congestion control in **Linux** (since 2.6.19) and **Windows** (since Windows 10). It models cwnd growth as a **cubic function of time** since the last congestion event.
+
+#### The Cubic Curve
+
+```
+    cwnd
+     ^
+     |         Wmax ------>  * * * * * * * * * *
+     |                   *                       *
+     |                *         Plateau            *
+     |             *       (cautious near Wmax)      *
+     |          *                                      *
+     |       *  Concave                     Convex       *
+     |    *     (fast ramp)              (aggressive       *
+     | *                                  probing)           *
+     +---------------------------------------------------------> time
+                        K (time to reach Wmax)
+```
+
+#### The Formula
+
+```
+W(t) = C × (t - K)³ + Wmax
+
+Where:
+  W(t)  = congestion window at time t
+  C     = scaling constant (0.4)
+  K     = ∛(Wmax × β / C)     (time to reach Wmax)
+  Wmax  = window size before last loss
+  β     = multiplicative decrease factor (0.7 for CUBIC, 0.5 for Reno)
+  t     = time since last congestion event
+```
+
+#### Why CUBIC Is Better Than Reno
+
+| Property | Reno (AIMD) | CUBIC |
+|----------|------------|-------|
+| **Growth basis** | ACK-clocked (per RTT) | Time-based (wall clock) |
+| **RTT fairness** | Unfair — low RTT flows grow faster | Fair — growth is time-based, RTT doesn't matter |
+| **High BDP networks** | Slow to fill large pipes | Fast — aggressive probing past Wmax |
+| **Near Wmax** | Linear approach (may overshoot) | Cautious plateau (cubic flattens near Wmax) |
+| **After loss** | cwnd / 2 (50% cut) | cwnd × 0.7 (30% cut — less aggressive) |
+
+#### CUBIC in Action — Example
+
+```
+1. Connection running at cwnd = 100 MSS (this is Wmax)
+2. Packet loss detected!
+3. New cwnd = 100 × 0.7 = 70 MSS
+4. CUBIC recovery:
+   - Phase 1 (concave):  Fast growth from 70 toward 100 (far from Wmax)
+   - Phase 2 (plateau):  Slow growth near 100 (cautious — don't cause another loss)
+   - Phase 3 (convex):   Accelerating growth past 100 (probing for more capacity)
+```
+
+### 13.5 ECN — Congestion Without Drops
+
+**Explicit Congestion Notification** (RFC 3168) lets routers signal congestion **without dropping packets**:
+
+```
+  Sender                    Router                    Receiver
+     |  IP: ECT(0)            |                          |
+     |----------------------->|  Queue filling...        |
+     |                        |  Marks: ECT(0) → CE     |
+     |                        |------------------------->|
+     |                        |                          |
+     |  <--- TCP: ECE flag ---|--------------------------|  (receiver echoes congestion)
+     |                        |                          |
+     |  TCP: CWR flag ------->|                          |  (sender reduces cwnd)
+     |  (cwnd reduced)        |                          |
+```
+
+- **ECT** (ECN-Capable Transport): Sender marks packets as ECN-capable
+- **CE** (Congestion Experienced): Router marks packets when queue is building
+- **ECE** (ECN-Echo): Receiver tells sender "congestion happened"
+- **CWR** (Congestion Window Reduced): Sender confirms it reduced cwnd
+
+**Benefit**: Congestion signal arrives **before** packets are dropped — sender reduces rate proactively, avoiding loss and retransmission.
+
+### 13.6 Key RFCs
+
+| RFC | Topic |
+|-----|-------|
+| [RFC 5681](https://www.ietf.org/rfc/rfc5681.html) | TCP Congestion Control (slow start, AIMD, fast retransmit/recovery) |
+| [RFC 6582](https://www.ietf.org/rfc/rfc6582.html) | NewReno — improved fast recovery for multiple losses |
+| [RFC 6928](https://www.ietf.org/rfc/rfc6928.html) | Increasing TCP Initial Window to 10 MSS |
+| [RFC 8312](https://www.ietf.org/rfc/rfc8312.html) | CUBIC congestion control algorithm |
+| [RFC 3168](https://www.ietf.org/rfc/rfc3168.html) | Explicit Congestion Notification (ECN) |
+
+---
+
+## 14. Key Formulas -- Cheat Sheet
 
 ```
 Sequence number math:
@@ -547,14 +904,20 @@ RTO (Retransmission Timeout):
 
 ---
 
-## 12. References
+## 15. References
 
 | Document | Topic |
 |----------|-------|
 | [RFC 9293](https://www.ietf.org/rfc/rfc9293.html) | TCP specification (replaces RFC 793) |
+| [RFC 1122](https://www.ietf.org/rfc/rfc1122.html) | Host Requirements — Delayed ACK rules |
 | [RFC 5681](https://www.ietf.org/rfc/rfc5681.html) | TCP Congestion Control |
 | [RFC 6298](https://www.ietf.org/rfc/rfc6298.html) | Computing TCP Retransmission Timer |
+| [RFC 6582](https://www.ietf.org/rfc/rfc6582.html) | NewReno Fast Recovery |
+| [RFC 6928](https://www.ietf.org/rfc/rfc6928.html) | Increasing TCP Initial Window |
 | [RFC 7323](https://www.ietf.org/rfc/rfc7323.html) | TCP Extensions for High Performance |
 | [RFC 2018](https://www.ietf.org/rfc/rfc2018.html) | TCP Selective Acknowledgment (SACK) |
+| [RFC 2883](https://www.ietf.org/rfc/rfc2883.html) | D-SACK — Duplicate SACK |
+| [RFC 3517](https://www.ietf.org/rfc/rfc3517.html) | Conservative SACK-based Loss Recovery |
+| [RFC 8312](https://www.ietf.org/rfc/rfc8312.html) | CUBIC Congestion Control |
 | [RFC 3168](https://www.ietf.org/rfc/rfc3168.html) | Explicit Congestion Notification (ECN) |
 | [RFC 4987](https://www.ietf.org/rfc/rfc4987.html) | TCP SYN Flooding Attacks and Mitigations |
